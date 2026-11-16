@@ -130,10 +130,25 @@ npm -w pipeline exec tsx src/film.ts http://localhost:<port>/ ../video/tel-aviv-
 npm -w pipeline exec tsx src/film.ts http://localhost:<port>/ ../video/stuttgart.mp4 --city stuttgart --seconds 4.5  # shots per city: FILMS in film.ts
 ```
 
+**Fixing a few buildings** (local rebuild, review, publish only them):
+
+```sh
+npm run scene -- tlv-core --parts 20         # swap the top 20 (osm-parts.json lists them, with their pixel boxes)
+npm run render -- tlv-core --force --only="x,y;x,y"   # just the render tiles under those boxes
+npm run paint -- tlv-core --parts            # repaint only the windows over them; only their art tiles are
+                                             # rebuilt, with the saved sea colour (paint.json seaRef)
+npm run export -- rothschild tlv-core --parts  # only tiles around them into the cache; the rest stays as published
+npm run dev                                  # review: the cache over production
+npm run publish -- israel-center             # uploads just that cache
+```
+
+A plain export also leaves out tiles whose encoded bytes equal the published ones, but after pipeline changes
+most tiles differ slightly, so `--parts` is what keeps a fix small.
+
 | Step | File | What it does |
 |---|---|---|
 | camera | `pipeline/src/camera.ts` | One orthographic camera per region, tilted 45° down, 0.25 m/px, in a local ENU frame at the region origin (Israel Center: Dizengoff Square, heading 340°). The same math drives both the renderer and the border projection, so they align exactly. |
-| fetch / scene | `pipeline/src/fetch.ts`, `scene.ts` | Buildings come from Tel Aviv-Yafo GIS (footprints + 2019 surveyed heights) and OSM elsewhere, and trees from the 2024 canopy layer, all extruded in our renderer. The municipal layer has one height per footprint (a podium can carry its tower's height: the Azrieli mall stood at 187 m), so the N municipal buildings OSM's 3D shapes (Simple 3D Buildings: `building:part`, heights) change most are swapped for those shapes (`scene -- tlv-core --parts N`, default 10; listed in `data/derived/<area>/osm-parts.json`). Raise N only together with `render --only` on their tiles and `paint --parts`, which repaints just the windows over them (old paintings kept in `windows-replaced/`). |
+| fetch / scene | `pipeline/src/fetch.ts`, `scene.ts` | Buildings come from Tel Aviv-Yafo GIS (footprints + 2019 surveyed heights) and OSM elsewhere, and trees from the 2024 canopy layer, all extruded in our renderer. The municipal layer has one height per footprint (a podium can carry its tower's height: the Azrieli mall stood at 187 m), so the N municipal buildings OSM's 3D shapes (Simple 3D Buildings: `building:part`, heights) change most are swapped for those shapes (`scene -- tlv-core --parts N`, default 10; listed in `data/derived/<area>/osm-parts.json`). See "Fixing a few buildings" below. |
 | ground | `pipeline/src/ground.ts`, `pipeline/page/ground.ts` | Terrain from Copernicus GLO-30 (a surface model: buildings removed with a morphological opening + blur), sea from the OSM coastline. The surface is drawn per tile from OSM onto a canvas texture draped on the terrain: landuse, parks, beach, water, pavements, roads at real widths (`roadspec.ts`, shared with traffic) with lane markings kept out of junctions, flat road ends with junction disks (no bulges at bridge ends), rail drawn in its layer (under road bridges), zebra crossings, paths, rail, soft contact shadows. Bridges/decks the municipal layer records as buildings (anything a motorway or railway runs through) are dropped in `scene.ts`. |
 | render | `pipeline/src/render.ts`, `pipeline/page/renderer.ts` | Headless Chrome (Playwright) + three.js. Buildings sit on the terrain grid and get window-grid facades; tree crowns are instanced. Each tile gets a color pass and a height pass. No network access, no API keys. |
 | paint | `pipeline/src/paint.ts` | Codex CLI image generation (ChatGPT login, no API key). Each window gets four images: the render, the height map, the style reference (`pipeline/style/reference.png`) and the tree species sheet (`pipeline/style/trees.png`: ficus, tipuana, jacaranda, flame tree, olive, Aleppo pine, eucalyptus, date and fan palms; the render colour-codes each crown's species, mostly one species per ~40 m patch). Windows are 1024 px with stride 896, painted in rings from the centre; each continues its painted neighbours. Open sea reuses one validated sea texture. Any window with a black band or patch is repainted, and every restart re-checks finished windows. Negative window numbers need `--window=-7,4`. To fix something on a seam, delete the neighbour sharing it first (each window copies its painted neighbours' edge strips, so a repaint would copy the old mistake back). When tiles are assembled, deep water in every window is shifted to the median deep-sea colour, fading in from the coast, so the sea has no window-sized patches. `--older=<ISO time>` repaints windows painted before that time (after a style change) alongside a normal run. `--assemble` only rebuilds the art tiles. |

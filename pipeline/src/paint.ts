@@ -411,7 +411,7 @@ async function deepWater(i: number, j: number) {
 
 /** window -> [cell weights, RGB offset to the reference deep-water colour] */
 const seaFix = new Map<string, [Float32Array, number[]]>();
-async function harmoniseSea() {
+async function harmoniseSea(saved?: number[]) {
   const means: Array<[string, Float32Array, number[]]> = [];
   for (const [i, j] of windows()) {
     if (!existsSync(winFile(i, j))) continue;
@@ -423,12 +423,14 @@ async function harmoniseSea() {
     for (let k = 0; k < m * m; k++) if (w[k] >= 1) { for (let c = 0; c < 3; c++) sum[c] += px[k * 3 + c]; n++; }
     means.push([`${i}_${j}`, w, sum.map((v) => v / n)]);
   }
-  const ref = [0, 1, 2].map((c) => means.map((m) => m[2][c]).sort((a, b) => a - b)[Math.floor(means.length / 2)]);
+  const ref = saved ?? [0, 1, 2].map((c) => means.map((m) => m[2][c]).sort((a, b) => a - b)[Math.floor(means.length / 2)]);
   for (const [k, w, mean] of means) seaFix.set(k, [w, mean.map((v, c) => ref[c] - v)]);
-  console.log(`  sea: ${means.length} windows with open water, reference rgb(${ref.map(Math.round).join(",")})`);
+  console.log(`  sea: ${means.length} windows with open water, ${saved ? "saved " : ""}reference rgb(${ref.map(Math.round).join(",")})`);
+  return ref;
 }
 
-async function assemble(all = false) {
+/** Rebuild art tiles: every one (all), those under the given windows (only), else those a newer window covers. */
+async function assemble(all = false, only?: Set<string>) {
   const ramp = new Float32Array(WIN);
   // 0 → 1 across a FEATHER-wide band centred in the overlap (complementary for neighbours)
   const edge = (k: number) => Math.min(1, Math.max(0, (k + 0.5 - (OVERLAP - FEATHER) / 2) / FEATHER));
@@ -443,7 +445,8 @@ async function assemble(all = false) {
     if (!covering.every(([i, j]) => existsSync(winFile(i, j)))) continue;
     const tile = join(base, "paint", `${tx}_${ty}.png`);
     // rebuilt when any covering window was repainted since
-    if (existsSync(tile) && !args.force && !all && covering.every(([i, j]) => mtime(winFile(i, j)) <= mtime(tile))) continue;
+    if (only && !covering.some(([i, j]) => only.has(`${i}_${j}`))) continue;
+    if (!only && existsSync(tile) && !args.force && !all && covering.every(([i, j]) => mtime(winFile(i, j)) <= mtime(tile))) continue;
     const acc = new Float32Array(T * T * 3), wsum = new Float32Array(T * T);
     for (const [i, j] of covering) {
       const px = await sharp(winFile(i, j)).resize(WIN, WIN).removeAlpha().raw().toBuffer();
@@ -507,7 +510,11 @@ async function main() {
     for (const [i, j] of wins) if (existsSync(winFile(i, j))) renameSync(winFile(i, j), join(keep, `${i}_${j}.png`));
     console.log(`  ${wins.length} windows over OSM 3D buildings; old paintings in ${keep}`);
   }
-  if (args.assemble) { await harmoniseSea(); return assemble(true); }
+  if (args.assemble) {
+    const seaRef = await harmoniseSea();
+    await assemble(true);
+    return writeFileSync(join(base, "paint.json"), JSON.stringify({ updated: new Date().toISOString(), seaRef }));
+  }
   // centre first: square rings around the city centre. Each ring runs in two passes over its
   // perimeter (even, then odd positions) so every window continues its painted inner/ring neighbours.
   const [cx, cy] = args.center.split(",").map(Number);
@@ -551,9 +558,13 @@ async function main() {
     }
     await assemble(); // finished tiles become visible ring by ring
   }
-  await harmoniseSea(); // then every tile with open water is rebuilt with the harmonised sea
-  await assemble(!args.window);
-  writeFileSync(join(base, "paint.json"), JSON.stringify({ updated: new Date().toISOString() }));
+  // then the tiles are rebuilt with the harmonised sea: all of them after a full run; after a partial one
+  // (--window, --near, --parts) only those under its windows, with the saved sea colour, so nothing else changes
+  const partial = !!(args.window || args.near || args.parts);
+  const prev = existsSync(join(base, "paint.json")) ? readJson(join(base, "paint.json")) : {};
+  const seaRef = await harmoniseSea(partial ? prev.seaRef : undefined);
+  await assemble(!partial, partial ? new Set(wins.map(([i, j]) => `${i}_${j}`)) : undefined);
+  writeFileSync(join(base, "paint.json"), JSON.stringify({ updated: new Date().toISOString(), seaRef }));
 }
 
 main();

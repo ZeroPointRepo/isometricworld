@@ -2,6 +2,7 @@
  * Export rendered/painted areas to the web viewer.
  *
  *   npm run export -- tlv-core [more areas…] [--data-only]
+ *   npm run export -- rothschild tlv-core --parts   # only the tiles around the buildings `scene --parts` swapped
  *
  * All areas must belong to one region. Only files that differ from what is published (R2) are
  * written, into the local cache data/web/regions/<region>/ (served by `npm run dev` over production;
@@ -24,7 +25,7 @@
  */
 import { isOneway, roadLanes, roadWidth } from "./roadspec.ts";
 import { createHash } from "node:crypto";
-import { constants, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { constants, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import sharp from "sharp";
 import { AREAS, groundH, areaPolygon, insideDistance, openArea } from "./areas.ts";
@@ -129,6 +130,12 @@ interface State {
   src?: Record<string, string>;
 }
 let state: State = { layers: {}, data: {} };
+/** what is on R2 now: a tile encoded to the same bytes stays out of the cache, so publish uploads only real changes */
+let published: State | null = null;
+/** --parts: art-pixel boxes (data/derived/<area>/osm-parts.json); native tiles outside them keep what is published */
+let SCOPE: number[][] | null = null;
+/** a repainted window reaches this far past a box (paint --parts repaints every window touching it) */
+const SCOPE_MARGIN = 1024 + 16;
 const hash = (b: Buffer | string) => createHash("sha1").update(b).digest("hex").slice(0, 10);
 const pendingFile = () => join(WEB_CACHE, `${activeRegion()}.state.json`);
 const publishedFile = () => join(WEB_STATE, `${activeRegion()}.json`);
@@ -225,11 +232,17 @@ async function exportLayer(layer: string, sources: Map<Key, string>) {
   const produced = new Set<string>(); // "z/x_y" of every tile of this export
   const save = async (img: ReturnType<typeof sharp>, z: number, x: number, y: number, stamp: string) => {
     const buf = await img.avif({ quality: QUALITY, effort: 4 }).toBuffer();
+    const id = `${z}/${x}_${y}`, file = join(root, `${z}`, `${x}`, `${y}.${FORMAT}`);
+    st.hashes[id] = hash(buf);
+    st.sources[id] = stamp;
+    if (published?.layers[layer]?.hashes[id] === st.hashes[id]) { // same pixels as on R2: nothing to upload
+      rmSync(file, { force: true });
+      checkpoint();
+      return;
+    }
     mkdirSync(join(root, `${z}`, `${x}`), { recursive: true });
-    writeFileSync(join(root, `${z}`, `${x}`, `${y}.${FORMAT}`), buf);
-    st.hashes[`${z}/${x}_${y}`] = hash(buf);
-    st.sources[`${z}/${x}_${y}`] = stamp;
-    changed.add(`${z}/${x}_${y}`);
+    writeFileSync(file, buf);
+    changed.add(id);
     checkpoint();
   };
   const fresh = (id: string, stamp: string) => !!st.hashes[id] && st.sources[id] === stamp;
@@ -264,6 +277,12 @@ async function exportLayer(layer: string, sources: Map<Key, string>) {
   const twin = layer === "map" ? null : state.layers.map;
   const reuse = (id: string, z: number, x: number, y: number, stamp: string) => {
     if (!twin || twin.sources[id] !== stamp || !twin.hashes[id]) return false;
+    if (published?.layers[layer]?.hashes[id] === twin.hashes[id]) { // already on R2
+      st.hashes[id] = twin.hashes[id];
+      st.sources[id] = stamp;
+      checkpoint();
+      return true;
+    }
     const from = join(OUT, "tiles", "map", `${z}`, `${x}`, `${y}.${FORMAT}`);
     if (!existsSync(from)) return false;
     mkdirSync(join(root, `${z}`, `${x}`), { recursive: true });
@@ -288,6 +307,7 @@ async function exportLayer(layer: string, sources: Map<Key, string>) {
         const stamp = `${src}@${grid ? `e${hash(Buffer.from(grid.buffer))}` : "in"}@edge${EDGE0}-${EDGE1}${painted ? `@${DECK_STYLE}` : ""}@${FORMAT}${QUALITY}`;
         level.add(key(x, y));
         produced.add(id);
+        if (SCOPE && st.hashes[id] && !SCOPE.some(([a, b, c, d]) => x * TS < c + SCOPE_MARGIN && (x + 1) * TS > a - SCOPE_MARGIN && y * TS < d + SCOPE_MARGIN && (y + 1) * TS > b - SCOPE_MARGIN)) continue;
         if (fresh(id, stamp)) continue;
         if (legacyNative(id, key(x, y), file, painted)) { st.sources[id] = stamp; continue; }
         if (reuse(id, NATIVE_Z, x, y, stamp)) continue;
@@ -912,6 +932,12 @@ async function main() {
   OUT = join(WEB_CACHE, "regions", activeRegion());
   const from = [pendingFile(), publishedFile()].find(existsSync);
   if (from) state = readJson(from);
+  if (existsSync(publishedFile())) published = readJson(publishedFile());
+  if (process.argv.includes("--parts")) {
+    SCOPE = areas.flatMap((a) => { const f = join(DERIVED, a, "osm-parts.json"); return existsSync(f) ? readJson(f).map((p: { px: number[] }) => p.px) : []; });
+    if (!SCOPE!.length) throw new Error("--parts: no osm-parts.json with buildings in these areas (run scene first)");
+    console.log(`  --parts: only tiles around ${SCOPE!.length} swapped building(s)`);
+  }
   console.log(`  ${activeRegion()}: ${from ? `changes since ${from === pendingFile() ? "the last (unpublished) export" : "the published state"}` : "no published state: building everything"}`);
   outlines = areas.map((a) => areaPolygon(AREAS[a].bbox));
   buildUnionEdges();
