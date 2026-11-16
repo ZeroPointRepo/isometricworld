@@ -7,6 +7,7 @@
  *                                        height above ground, base/roof elevation, floors
  * data/raw/<area>/tlv_canopy.geojson     layer 574: 2024 tree canopy polygons
  * data/raw/<area>/osm.json               OSM buildings + trees (outside Tel Aviv-Yafo coverage)
+ * data/raw/<area>/osm_parts.json         OSM building:parts (Tel Aviv-Yafo: towers on podiums)
  * data/raw/<area>/roads.json             OSM drivable roads (for the traffic animation)
  * data/raw/<area>/rails.json             OSM rail routes (S-Bahn, regional, Stadtbahn…) and their tracks (trains)
  * data/raw/<area>/ground.json            OSM ground surface: roads/paths, landuse, parks, water,
@@ -100,6 +101,16 @@ ${sources === "lgl" ? `(node["natural"="tree"]${b}; ${["building", "building:par
 out body geom;`, area.bbox, sources === "lgl" ? FILTERS.treesAndLooks : FILTERS.buildingsAndTrees);
   writeFileSync(join(dir, "osm.json"), JSON.stringify(data));
   console.log(`  osm: ${data.elements.length} elements`);
+}
+// OSM building:parts (Simple 3D Buildings): the municipal layer has one height per footprint, so towers on
+// podiums (Azrieli…) come out as one block. scene.ts swaps in the parts for the buildings they change most.
+if (sources === "tlv" && !existsSync(join(dir, "osm_parts.json"))) {
+  const [s, w, n, e] = area.bbox, b = `(${s},${w},${n},${e})`;
+  const data = await overpass(`[out:json][timeout:300];
+(way["building:part"]${b}; relation["building:part"]${b};);
+out body geom;`);
+  writeFileSync(join(dir, "osm_parts.json"), JSON.stringify(data));
+  console.log(`  osm building parts: ${data.elements.length}`);
 }
 if (!existsSync(join(dir, "roads.json"))) {
   const [s, w, n, e] = area.bbox;

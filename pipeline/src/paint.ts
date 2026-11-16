@@ -10,9 +10,10 @@
  *   npm run paint -- tlv-core --window 4,-3
  *   npm run paint -- tlv-core --near 32.064,34.775 --radius 2   # a patch of windows
  *   npm run paint -- tlv-core -j 3                              # everything, centre first (--center lat,lon)
+ *   npm run paint -- tlv-core --parts                           # windows over the buildings scene.ts gave OSM 3D shapes
  */
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, openSync, closeSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import sharp, { type OverlayOptions } from "sharp";
@@ -113,6 +114,8 @@ const { values: args, positionals } = parseArgs({
     window: { type: "string" },
     near: { type: "string" },
     radius: { type: "string", default: "1" },
+    // repaint the windows over the buildings scene.ts swapped for OSM 3D shapes (data/derived/<area>/osm-parts.json)
+    parts: { type: "boolean", default: false },
     force: { type: "boolean", default: false },
     // repaint windows painted before this time (e.g. after a style change); runs alongside a normal paint
     older: { type: "string" },
@@ -488,12 +491,22 @@ async function main() {
     wins = wins.filter(([i, j]) => Math.abs(i - ci) <= r && Math.abs(j - cj) <= r);
   }
   if (args.window) wins = [args.window.split(",").map(Number) as [number, number]];
+  if (args.parts) {
+    const boxes: number[][] = readJson(join(base, "osm-parts.json")).map((p: { px: number[] }) => p.px), m = 16;
+    wins = wins.filter(([i, j]) => boxes.some(([x0, y0, x1, y1]) => i * STRIDE < x1 + m && i * STRIDE + WIN > x0 - m && j * STRIDE < y1 + m && j * STRIDE + WIN > y0 - m));
+  }
   if (OLDER) { // only land windows (sea-texture windows have no trees) painted before the cut-off
     const old: Array<[number, number]> = [];
     for (const [i, j] of wins) if (existsSync(winFile(i, j)) && !current(i, j) && !(await looksLikeSea(winFile(i, j)))) old.push([i, j]);
     wins = old;
   }
   if (args.plan) return console.log(`${wins.length} windows`);
+  if (args.parts) { // the old paintings move aside (not deleted), so neighbours in the set don't continue them
+    const keep = join(base, "windows-replaced", new Date().toISOString().slice(0, 19).replace(/:/g, "-"));
+    mkdirSync(keep, { recursive: true });
+    for (const [i, j] of wins) if (existsSync(winFile(i, j))) renameSync(winFile(i, j), join(keep, `${i}_${j}.png`));
+    console.log(`  ${wins.length} windows over OSM 3D buildings; old paintings in ${keep}`);
+  }
   if (args.assemble) { await harmoniseSea(); return assemble(true); }
   // centre first: square rings around the city centre. Each ring runs in two passes over its
   // perimeter (even, then odd positions) so every window continues its painted inner/ring neighbours.

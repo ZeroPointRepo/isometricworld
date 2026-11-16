@@ -3,7 +3,7 @@
  * global orthographic camera. Run `fetch`, `ground` and `scene` for the area first.
  *
  *   npm run render -- tlv-core            # all tiles of an area
- *   npm run render -- tlv-core --only 0,5 # a single tile
+ *   npm run render -- tlv-core --only 0,5 # a single tile ("0,5;1,5" for several)
  *   npm run render -- tlv-core -j 4       # parallel browser pages
  *
  * Output: data/derived/<area>/render/<tx>_<ty>.png  (1024² colour)
@@ -91,7 +91,7 @@ async function main() {
   for (const d of ["render", "height"]) mkdirSync(join(outDir, d), { recursive: true });
   let tiles = areaTiles(area.bbox);
   const all = tiles;
-  if (args.only) tiles = [args.only.split(",").map(Number) as [number, number]];
+  if (args.only) tiles = args.only.split(";").map((t) => t.split(",").map(Number) as [number, number]);
   const todo = tiles.filter(([x, y]) => args.force || !existsSync(join(outDir, "render", `${x}_${y}.png`)));
   console.log(`${areaName}: ${all.length} tiles, ${todo.length} to render`);
 

@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openArea } from "./areas.ts";
-import { CAMERA, ecefToEnu, enuToPixel, llhToEcef } from "./camera.ts";
+import { CAMERA, ecefToEnu, enuToLlh, enuToPixel, llhToEcef } from "./camera.ts";
 import { isBridge } from "./bridges.ts";
 import { crowns } from "./canopy.ts";
 import { ARCADES, arcade, LOOKS, type Piece, TOPS, TOWERS } from "./landmarks.ts";
@@ -81,6 +81,7 @@ function inside([x, y]: P2, poly: P2[]) {
   return c;
 }
 
+const centre = (r: P2[]): P2 => [r.reduce((a, p) => a + p[0], 0) / r.length, r.reduce((a, p) => a + p[1], 0) / r.length];
 const hash = (n: number) => { let x = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b); x ^= x >>> 13; return (Math.imul(x, 0xc2b2ae35) >>> 0) / 2 ** 32; };
 
 /**
@@ -192,6 +193,8 @@ mkdirSync(out, { recursive: true });
 type Building = { ring: P2[]; h: number; s: number; g: number | null };
 const buildings: Building[] = [];
 const tlvCover: P2[][] = [];
+/** municipal footprints with their holes, for the OSM 3D swap (1a) */
+const tlvRecs: Array<{ b: Building; holes: P2[][]; id: number }> = [];
 
 const trees: Array<[number, number, number, number]> = [];
 const meshes: Lod2Building[] = [];
@@ -208,11 +211,120 @@ for (const f of tlv.features) {
   for (const poly of polys) {
     const ring = ringFromLonLat(poly[0]);
     if (!ring) continue;
-    buildings.push({ ring, h: Math.max(3, h), s: style(h, kind, p.id_binyan ?? buildings.length, p.year), g: p.min_height ? p.min_height + GEOID : null });
+    const b = { ring, h: Math.max(3, h), s: style(h, kind, p.id_binyan ?? buildings.length, p.year), g: p.min_height ? p.min_height + GEOID : null };
+    buildings.push(b);
     tlvCover.push(ring);
+    tlvRecs.push({ b, holes: poly.slice(1).map((r: number[][]) => ringFromLonLat(r)).filter(Boolean) as P2[][], id: p.id_binyan });
   }
 }
 if (region.sources === "tlv") console.log(`  tlv buildings: ${buildings.length}`);
+const osm = readJson(join(raw, "osm.json"));
+
+// 1a. OSM 3D shapes (Simple 3D Buildings) for the municipal buildings they change most. The municipal layer
+// has one height per footprint: a podium can carry its tower's height (Azrieli Center: the mall at 187 m)
+// and a tower on a podium is one block. OSM buildings and building:parts give the shape. Only the top N
+// (--parts N, default 10) are swapped, so the rest of the render still matches the paintings; the swapped
+// buildings go to data/derived/<area>/osm-parts.json for `paint --parts`.
+const PARTS_N = Number(process.argv.find((a, i) => process.argv[i - 1] === "--parts") ?? process.argv.find((a) => a.startsWith("--parts="))?.slice(8) ?? 10);
+const swapped: Array<{ id: number; name: string; lat: number; lon: number; was: number; now: number; px: number[] }> = [];
+if (region.sources === "tlv" && existsSync(join(raw, "osm_parts.json")) && PARTS_N > 0) {
+  const num = (v?: string) => { const x = parseFloat((v ?? "").replace(",", ".")); return Number.isFinite(x) ? x : 0; };
+  type Shape = { ring: P2[]; top: number; c: P2; a: number; part: boolean; outline?: boolean; id: string; name: string };
+  const shapes: Shape[] = [], seen = new Set<string>();
+  for (const el of [...readJson(join(raw, "osm_parts.json")).elements, ...osm.elements]) {
+    const t = el.tags ?? {}, id = `${el.type}${el.id}`;
+    if (seen.has(id) || !(t.building || t["building:part"]) || el.type === "node") continue;
+    seen.add(id);
+    if (t.building === "roof" || t["building:part"] === "roof" || t.location === "underground") continue;
+    const coords = el.type === "way" ? el.geometry?.map((q: any) => [q.lon, q.lat])
+      : el.members?.find((m: any) => m.role === "outer" && m.geometry)?.geometry.map((q: any) => [q.lon, q.lat]);
+    const ring = coords?.length >= 4 ? ringFromLonLat(coords) : null;
+    const levels = num(t["building:levels"]), top = num(t.height) || (levels ? levels * FLOOR + 1 : 0);
+    if (!ring || !top) continue;
+    shapes.push({ ring, top, c: centre(ring), a: Math.abs(area2(ring)), part: !!t["building:part"] && !t.building, id, name: t["name:en"] ?? t.name ?? "" });
+  }
+  const grid = <V>(items: V[], at: (v: V) => P2) => {
+    const g = new Map<string, V[]>();
+    for (const v of items) { const [x, y] = at(v), k = `${Math.floor(x / 60)}_${Math.floor(y / 60)}`; (g.get(k) ?? g.set(k, []).get(k)!).push(v); }
+    return (p: P2, r: number) => {
+      const out: V[] = [];
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) out.push(...(g.get(`${Math.floor(p[0] / 60) + dx}_${Math.floor(p[1] / 60) + dy}`) ?? []));
+      return out;
+    };
+  };
+  const samples = (ring: P2[], n: number) => {
+    const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]), st = Math.max(1, Math.sqrt(Math.abs(area2(ring))) / n), out: P2[] = [];
+    for (let x = Math.min(...xs) + st / 2; x < Math.max(...xs); x += st)
+      for (let y = Math.min(...ys) + st / 2; y < Math.max(...ys); y += st) if (inside([x, y], ring)) out.push([x, y]);
+    return { pts: out, cell: st * st };
+  };
+  // an outline whose parts cover it is not drawn (S3DB); one only partly split into parts (the Azrieli mall)
+  // still stands under them at its own height
+  const partsNear = grid(shapes.filter((s) => s.part), (s) => s.c);
+  for (const s of shapes) if (!s.part) {
+    const mine = partsNear(s.c, Math.ceil(Math.sqrt(s.a) / 60) + 1).filter((p) => inside(p.c, s.ring));
+    if (!mine.length) continue;
+    const { pts } = samples(s.ring, 20);
+    s.outline = pts.filter((q) => mine.some((p) => inside(q, p.ring))).length >= 0.85 * pts.length;
+  }
+  const drawn = shapes.filter((s) => !s.outline);
+  const shapesNear = grid(drawn, (s) => s.c), recsNear = grid(tlvRecs, (r) => centre(r.b.ring));
+  const inRec = (p: P2, r: (typeof tlvRecs)[number]) => inside(p, r.b.ring) && !r.holes.some((h) => inside(p, h));
+  type Cand = { rec: (typeof tlvRecs)[number]; own: Shape[]; change: number; now: number };
+  const cands: Cand[] = [];
+  for (const rec of tlvRecs) {
+    const m = rec.b, A = Math.abs(area2(m.ring));
+    if (A < 150 || m.h < 25) continue;
+    const R = Math.ceil(Math.max(...m.ring.map((p) => Math.hypot(p[0] - centre(m.ring)[0], p[1] - centre(m.ring)[1]))) / 60) + 2;
+    // OSM shapes mostly (≥ 50 %) inside this footprint
+    const own = shapesNear(centre(m.ring), R).filter((s) => { const { pts } = samples(s.ring, 12); return pts.length > 0 && pts.filter((p) => inRec(p, rec)).length / pts.length >= 0.5; });
+    if (!own.length) continue;
+    const others = recsNear(centre(m.ring), R).filter((o) => o !== rec && Math.abs(area2(o.b.ring)) < A);
+    const { pts, cell } = samples(m.ring, 40);
+    let n = 0, cov = 0, change = 0;
+    for (const p of pts) {
+      if (!inRec(p, rec)) continue;
+      n++;
+      if (others.some((o) => inRec(p, o))) { cov++; continue; } // a tower mapped on its own in the municipal layer
+      const tops = own.filter((s) => inside(p, s.ring)).map((s) => s.top);
+      if (tops.length) { cov++; change += Math.abs(Math.max(...tops) - m.h) * cell; }
+    }
+    const now = Math.max(...own.map((s) => s.top));
+    const touching = others.filter((o) => inRec(centre(o.b.ring), rec) || o.b.ring.some((q) => inRec(q, rec)));
+    // trust OSM when it agrees on the top, or when a tower in the footprint explains the municipal height
+    const agrees = now >= 0.8 * m.h && now <= 1.25 * m.h, podium = touching.some((o) => o.b.h >= 0.8 * m.h);
+    if (n && cov / n >= 0.85 && (agrees || podium)) cands.push({ rec, own, change, now });
+  }
+  cands.sort((a, b) => b.change - a.change);
+  const used = new Map<string, (typeof swapped)[number]>(), gone = new Set<Building>();
+  for (const c of cands) {
+    if (swapped.length >= PARTS_N) break;
+    if (gone.has(c.rec.b)) continue; // a duplicate footprint of one already swapped
+    const m = c.rec.b, add = c.own.filter((s) => !used.has(s.id));
+    const pxBox = (r: P2[], lo: number, hi: number) => r.flatMap(([x, y]) => [enuToPixel([x, y, lo]), enuToPixel([x, y, hi])]);
+    const g0 = Math.min(...m.ring.map(([x, y]) => groundAt(x, y))) - 3;
+    const bounds = (px: P2[]) => [Math.min(...px.map((p) => p[0])), Math.min(...px.map((p) => p[1])), Math.max(...px.map((p) => p[0])), Math.max(...px.map((p) => p[1]))].map(Math.round);
+    if (!add.length) { // its OSM shapes went to a building already swapped: a second municipal copy of it, dropped too
+      const owner = used.get(c.own[0].id)!, b = bounds(pxBox(m.ring, g0, g0 + 6 + m.h));
+      owner.px = [Math.min(owner.px[0], b[0]), Math.min(owner.px[1], b[1]), Math.max(owner.px[2], b[2]), Math.max(owner.px[3], b[3])];
+      gone.add(m); buildings.splice(buildings.indexOf(m), 1);
+      console.log(`  osm 3D: #${c.rec.id} is a copy of #${owner.id}, dropped`);
+      continue;
+    }
+    // municipal duplicates of this footprint (Azrieli Sarona is mapped twice) go with it
+    const dups = recsNear(centre(m.ring), 3).filter((o) => o !== c.rec && !gone.has(o.b) && Math.abs(area2(o.b.ring)) > 0.7 * Math.abs(area2(m.ring)) && Math.abs(area2(o.b.ring)) < 1.4 * Math.abs(area2(m.ring)) && (() => { const { pts } = samples(o.b.ring, 12); return pts.length > 0 && pts.filter((p) => inRec(p, c.rec)).length / pts.length >= 0.5; })());
+    const px = [...pxBox(m.ring, g0, g0 + 6 + m.h), ...dups.flatMap((o) => pxBox(o.b.ring, g0, g0 + 6 + o.b.h)), ...add.flatMap((s) => pxBox(s.ring, g0, g0 + 6 + s.top))];
+    for (const b of [m, ...dups.map((o) => o.b)]) { gone.add(b); buildings.splice(buildings.indexOf(b), 1); }
+    for (const s of add) buildings.push({ ring: s.ring, h: s.top, s: style(s.top, m.s === 2 ? "public" : "regular", c.rec.id), g: m.g });
+    const [lat, lon] = enuToLlh([...centre(m.ring), 0]);
+    const nm = [...new Set(c.own.map((s) => s.name).filter(Boolean))].join(" / ");
+    const entry = { id: c.rec.id, name: nm, lat, lon, was: m.h, now: c.now, px: bounds(px) };
+    swapped.push(entry);
+    for (const s of add) used.set(s.id, entry);
+    console.log(`  osm 3D: #${c.rec.id} ${nm || "(unnamed)"} ${Math.round(m.h)} m -> ${add.length} OSM shape(s) up to ${Math.round(c.now)} m${dups.length ? `, ${dups.length} duplicate(s) dropped` : ""}`);
+  }
+  console.log(`  osm 3D: ${swapped.length} of ${cands.length} candidate buildings swapped (--parts ${PARTS_N})`);
+}
 
 // 1b. LGL LoD2 buildings (real roofs) and nDOM1 tree crowns.
 if (region.sources === "lgl") {
@@ -284,7 +396,6 @@ const covered = (pt: P2) => {
     if (coverGrid.get(`${Math.floor(pt[0] / 50) + dx}_${Math.floor(pt[1] / 50) + dy}`)?.some((r) => inside(pt, r))) return true;
   return false;
 };
-const osm = readJson(join(raw, "osm.json"));
 let osmCount = 0;
 // LoD2 regions: OSM roof:colour / roof:material, building:colour / building:material per footprint or building part
 // tall towers (TV towers…): LoD2 has only a stump, OSM often has the whole shape as building:parts with min_height
@@ -433,7 +544,6 @@ const c2 = (v: number) => Math.round(v * 100) / 100;
 // 3b. Tall towers from OSM: replace the LoD2 mesh with the tower's building:parts (or its outline), extruded
 // from min_height to height; colours straight from the part's tags.
 type Mesh = (typeof meshes)[number] & { look?: { roof: number[] | null; wall: number[] | null; style: number } };
-const centre = (r: P2[]): P2 => [r.reduce((a, p) => a + p[0], 0) / r.length, r.reduce((a, p) => a + p[1], 0) / r.length];
 function prism(ring: P2[], base: number, min: number, h: number, look: Mesh["look"]): Mesh {
   const c = centre(ring), roof: number[] = [], wall: number[] = [];
   let along = 0;
@@ -555,4 +665,5 @@ for (const t of trees) {
 }
 for (const [k, v] of bins) writeFileSync(join(out, `${k}.json`), JSON.stringify(v.m.length ? v : { b: v.b, t: v.t }));
 console.log(`  ${bins.size} tile bins -> ${out}`);
+if (region.sources === "tlv") writeFileSync(join(DERIVED, name, "osm-parts.json"), JSON.stringify(swapped, null, 1));
 if (!existsSync(join(DERIVED, name))) mkdirSync(join(DERIVED, name), { recursive: true });
