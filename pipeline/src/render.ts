@@ -4,6 +4,7 @@
  *
  *   npm run render -- tlv-core            # all tiles of an area
  *   npm run render -- tlv-core --only 0,5 # a single tile ("0,5;1,5" for several)
+ *   npm run render -- tlv-core --parts    # the tiles under the buildings `scene --parts` swapped
  *   npm run render -- tlv-core -j 4       # parallel browser pages
  *
  * Output: data/derived/<area>/render/<tx>_<ty>.png  (1024² colour)
@@ -26,6 +27,7 @@ const { values: args, positionals } = parseArgs({
   options: {
     j: { type: "string", default: "3" },
     only: { type: "string" },
+    parts: { type: "boolean", default: false }, // re-render the tiles under the buildings scene.ts swapped (osm-parts.json)
     force: { type: "boolean", default: false },
     ss: { type: "string", default: "2" },
     markers: { type: "string", default: "" },
@@ -92,7 +94,11 @@ async function main() {
   let tiles = areaTiles(area.bbox);
   const all = tiles;
   if (args.only) tiles = args.only.split(";").map((t) => t.split(",").map(Number) as [number, number]);
-  const todo = tiles.filter(([x, y]) => args.force || !existsSync(join(outDir, "render", `${x}_${y}.png`)));
+  if (args.parts) {
+    const boxes: number[][] = JSON.parse(readFileSync(join(outDir, "osm-parts.json"), "utf8")).map((p: { px: number[] }) => p.px);
+    tiles = all.filter(([x, y]) => boxes.some(([a, b, c, d]) => x * T < c + 8 && (x + 1) * T > a - 8 && y * T < d + 8 && (y + 1) * T > b - 8));
+  }
+  const todo = tiles.filter(([x, y]) => args.force || args.parts || !existsSync(join(outDir, "render", `${x}_${y}.png`)));
   console.log(`${areaName}: ${all.length} tiles, ${todo.length} to render`);
 
   const manifestPath = join(outDir, "manifest.json");

@@ -134,7 +134,7 @@ npm -w pipeline exec tsx src/film.ts http://localhost:<port>/ ../video/stuttgart
 
 ```sh
 npm run scene -- tlv-core --parts 20         # swap the top 20 (osm-parts.json lists them, with their pixel boxes)
-npm run render -- tlv-core --force --only="x,y;x,y"   # just the render tiles under those boxes
+npm run render -- tlv-core --parts           # just the render tiles under them
 npm run paint -- tlv-core --parts            # repaint only the windows over them; only their art tiles are
                                              # rebuilt, with the saved sea colour (paint.json seaRef)
 npm run export -- rothschild tlv-core --parts  # only tiles around them into the cache; the rest stays as published
