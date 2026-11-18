@@ -198,7 +198,13 @@ most tiles differ slightly, so `--parts` is what keeps a fix small.
   windows (repainted up to 3 times, then left unpainted): roofs where the render has none (> 4% of the window)
   and much busier detail than a nearly blank render (fields, squares). Art tiles that only some windows
   cover blend into the render, and areas of one region reuse each other's windows, so painting
-  `zagreb-south` after `zagreb-core` continues its edges instead of repainting them.
+  `zagreb-south` after `zagreb-core` continues its edges instead of repainting them. The ~40 windows the checks
+  still refused (woods, fields, big paved lots) were filled with `google/nano-banana-2.1/edit`
+  (`PAINT_FAL_ENDPOINT`, `PAINT_THINKING=high`, ~$0.09 a window): it keeps the layout, and an extra line
+  asks it to paint like the window's already-painted edge strips, else it keeps the render's chunky look.
+- Tracks get their surface's colour (`ground.ts` `trackKind`): only running tracks are red tartan. The Hipodrom has
+  a grass gallop track, a gravel trotting track and a sand training track mapped as a closed way with a width,
+  drawn as a band (a closed `leisure=track` is a line in OSM unless `area=yes`); riding arenas are sand.
 - Areas: `jelacic` (a test patch around Trg bana Jelačića) and 16 `zagreb-*` areas, overlapping boxes
   trimmed to the outline.
 

@@ -33,7 +33,7 @@ const R_EARTH = 6371000;
  * k: kind (drawn by page/renderer.ts), r: polygon rings (even-odd) or l: polyline,
  * w: line width (m), o: one-way, n: lanes, y: layer (bridges above)
  */
-export interface Feature { k: string; r?: P2[][]; l?: P2[]; w?: number; o?: 1; n?: number; y?: number; j?: number[][]; v?: number; b?: 1; e?: [number, number] }
+export interface Feature { k: string; r?: P2[][]; l?: P2[]; w?: number; o?: 1; n?: number; y?: number; j?: number[][]; v?: number; b?: 1; e?: [number, number]; s?: string }
 
 const name = process.argv[2] ?? "tlv-core";
 const area = openArea(name);
@@ -131,6 +131,18 @@ const PATH: Record<string, number> = { pedestrian: 5, footway: 2.2, path: 1.6, c
 
 const GRASS = /^(grass|dirt|ground|earth|unpaved)$/;
 /**
+ * A track's ground by its surface: only running tracks are red tartan. Racecourses and riding tracks are sand,
+ * gravel or grass (the Zagreb Hipodrom: a grass gallop track, a gravel trotting track, a sand training track).
+ */
+function trackKind(t: Record<string, string>): string {
+  const s = t.surface ?? "";
+  if (/^(sand|dirt|earth|ground|unpaved|compacted|clay)$/.test(s)) return "sand";
+  if (/^(gravel|fine_gravel|pebblestone)$/.test(s)) return "gravel";
+  if (/^(grass|grass_paver)$/.test(s)) return "park";
+  if (/^(asphalt|concrete|paved)$/.test(s)) return "tarmac";
+  return /horse_racing|equestrian/.test(t.sport ?? "") ? "sand" : "track";
+}
+/**
  * Fields are not all one colour: a shade per field, from its crop where mapped (index into the ground page's
  * FIELD palette: 0 wheat/cereal, 1 maize, 2 grass/hay, 3 vegetables, 4 rapeseed), else from the OSM id (5+).
  */
@@ -156,8 +168,9 @@ function areaKind(t: Record<string, string>): string | null {
   // airfields: runways, taxiways, aprons drawn as areas by surface (EDTQ: asphalt and grass side by side)
   if (/^(runway|taxiway|apron|helipad)$/.test(t.aeroway ?? "")) return GRASS.test(t.surface ?? "") ? "airgrass" : "tarmac";
   if (na === "beach" || na === "sand") return "sand";
+  if (le === "pitch" && /equestrian|horse_racing/.test(t.sport ?? "")) return "sand"; // riding arenas
   if (le === "pitch" || le === "stadium") return "pitch";
-  if (le === "track") return "track";
+  if (le === "track") return trackKind(t);
   if (le === "playground") return "playground";
   if (na === "wood" || lu === "forest") return "wood";
   if (["scrub", "grassland", "heath", "wetland", "bare_rock"].includes(na)) return "scrub";
@@ -203,9 +216,12 @@ for (const el of osm.elements) {
   let rings: P2[][] | null = null;
   if (el.type === "way" && el.geometry) {
     const g = geom(el.geometry);
-    if (closed(g) && !(t.highway && t.area !== "yes") && !t.railway) rings = [g];
-    else if (t.highway || t.railway || ["breakwater", "groyne", "pier"].includes(t.man_made) || /^(runway|taxiway)$/.test(t.aeroway ?? "")) {
+    // a track way with a width is the track itself, closed or not (OSM: a closed leisure=track is a line unless area=yes)
+    const trackLine = t.leisure === "track" && t.area !== "yes" && Number(String(t.width).replace(",", ".")) > 0;
+    if (closed(g) && !(t.highway && t.area !== "yes") && !t.railway && !trackLine) rings = [g];
+    else if (trackLine || t.highway || t.railway || ["breakwater", "groyne", "pier"].includes(t.man_made) || /^(runway|taxiway)$/.test(t.aeroway ?? "")) {
       const l = simplifyLine(g, 0.3);
+      if (trackLine) { features.push({ k: "trackline", l, w: r1(Number(String(t.width).replace(",", "."))), s: trackKind(t) }); continue; }
       if (t.aeroway) { // runway / taxiway centre lines at their width (OSM width, else 30 m / 10 m)
         const w = Number(String(t.width).replace(",", ".")) || (t.aeroway === "runway" ? 30 : 10);
         features.push({ k: GRASS.test(t.surface ?? "") ? "grassway" : t.aeroway, l, w: r1(w) });

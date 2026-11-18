@@ -266,38 +266,61 @@ function limitWait(log: string) {
 /**
  * Painter: the Codex CLI (ChatGPT plan, the default) or an image model through fal.ai (PAINT_BACKEND=fal: pay per
  * call, many windows at once). The bake-off on Zagreb (Nov 2026) picked openai/gpt-image-2.6/sunburst/edit at "high".
+ * google/nano-banana-2.1/edit changes the layout least (a retouched render more than a painting, ~$0.03): Zagreb's
+ * last windows, where gpt-image kept inventing buildings on fields and woods, were filled with it.
  * Every fal call's billed cost (x-fal-billable-units, USD) goes to paint-spend.jsonl; PAINT_BUDGET_USD stops new calls.
  */
 const BACKEND = process.env.PAINT_BACKEND ?? "codex";
 const FAL_ENDPOINT = process.env.PAINT_FAL_ENDPOINT ?? "openai/gpt-image-2.6/sunburst/edit";
 const FAL_QUALITY = process.env.PAINT_QUALITY ?? "high";
+/** Google's image models on fal (Nano Banana) take an aspect ratio and a resolution, not a size and a quality */
+const GOOGLE = /nano-banana|gemini/.test(FAL_ENDPOINT);
 const BUDGET = Number(process.env.PAINT_BUDGET_USD) || Infinity;
 const SPEND = join(base, "paint-spend.jsonl");
 let spent = existsSync(SPEND) ? readFileSync(SPEND, "utf8").split("\n").filter(Boolean).reduce((a, l) => a + (JSON.parse(l).usd || 0), 0) : 0;
 const overBudget = () => BACKEND === "fal" && spent >= BUDGET;
 
+/**
+ * USD per billable unit of the endpoint (fal's pricing API): gpt-image-2.6 and Nano Banana 2.1 bill in dollar units,
+ * Nano Banana Pro per image ($0.15). Unknown: 1 (the units are logged too, so the ledger can be corrected).
+ */
+let price: Promise<number> | undefined;
+function unitPrice(): Promise<number> {
+  price ??= fetch(`https://api.fal.ai/v1/models/pricing?endpoint_id=${encodeURIComponent(FAL_ENDPOINT)}`,
+    { headers: { Authorization: `Key ${process.env.FAL_KEY}` }, signal: AbortSignal.timeout(30_000) })
+    .then((r) => r.json()).then((j: any) => Number(j.prices?.[0]?.unit_price) || 1).catch(() => 1);
+  return price;
+}
+
 async function falPaint(cwd: string, prompt: string, id: string): Promise<void> {
   const log = join(cwd, "codex.log");
   if (overBudget()) { writeFileSync(log, `budget of $${BUDGET} reached`); return; }
   // the API gets the images directly: drop the Codex-only instructions (use the tool, copy the file)
-  const text = prompt.replace(/^Use your image generation tool\. /, "").replace(/\s*When done, copy[\s\S]*$/, "").trim();
+  let text = prompt.replace(/^Use your image generation tool\. /, "").replace(/\s*When done, copy[\s\S]*$/, "").trim();
+  // Google's models keep the render's own look unless told otherwise: paint like the painted edge strips
+  if (GOOGLE && text.includes("ALREADY-PAINTED")) text += "\nRepaint ALL of image 1 in the exact style of its already-painted edge strips: the same small, "
+    + "finely drawn tree crowns, the same light ground showing between them, the same colours and brightness. No part of the "
+    + "result may keep the flat, chunky look of the 3D render: it must be impossible to tell where the strips end.";
   const uri = (f: string) => `data:image/png;base64,${readFileSync(join(cwd, f)).toString("base64")}`;
   for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       const r = await fetch(`https://fal.run/${FAL_ENDPOINT}`, {
         method: "POST", headers: { Authorization: `Key ${process.env.FAL_KEY}`, "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: text, image_urls: ["input.png", "height.png", "style.png", "trees.png"].map(uri),
-          image_size: { width: WIN, height: WIN }, quality: FAL_QUALITY, num_images: 1, output_format: "png" }),
+          num_images: 1, output_format: "png",
+          ...(GOOGLE ? { aspect_ratio: "1:1", resolution: "1K", ...(process.env.PAINT_THINKING ? { thinking_level: process.env.PAINT_THINKING } : {}) } : { image_size: { width: WIN, height: WIN }, quality: FAL_QUALITY }) }),
         signal: AbortSignal.timeout(600_000),
       });
-      const usd = Number(r.headers.get("x-fal-billable-units") ?? 0);
+      const units = Number(r.headers.get("x-fal-billable-units") ?? 0), usd = units * (await unitPrice());
       spent += usd;
-      appendFileSync(SPEND, JSON.stringify({ window: id, usd, status: r.status, request: r.headers.get("x-fal-request-id"), at: new Date().toISOString() }) + "\n");
+      appendFileSync(SPEND, JSON.stringify({ window: id, usd, units, status: r.status, request: r.headers.get("x-fal-request-id"), at: new Date().toISOString() }) + "\n");
       const j: any = await r.json().catch(() => ({}));
       if (r.status === 429 || r.status >= 500) { writeFileSync(log, JSON.stringify(j)); await sleep(20_000 * attempt); continue; }
       if (!r.ok || !j.images?.[0]?.url) { writeFileSync(log, JSON.stringify(j)); return; }
-      const img = await fetch(j.images[0].url, { signal: AbortSignal.timeout(120_000) });
-      writeFileSync(join(cwd, "out.png"), Buffer.from(await img.arrayBuffer()));
+      const img = Buffer.from(await (await fetch(j.images[0].url, { signal: AbortSignal.timeout(120_000) })).arrayBuffer());
+      // Google's models pick their own pixel size for 1:1 at 1K: back to the window's
+      const meta = await sharp(img).metadata();
+      writeFileSync(join(cwd, "out.png"), meta.width === WIN && meta.height === WIN ? img : await sharp(img).resize(WIN, WIN, { fit: "fill" }).png().toBuffer());
       writeFileSync(log, `fal ${FAL_ENDPOINT} ${FAL_QUALITY} $${usd} request ${r.headers.get("x-fal-request-id")}`);
       return;
     } catch (err) {
