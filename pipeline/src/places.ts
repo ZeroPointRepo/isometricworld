@@ -180,7 +180,7 @@ export const REGIONS: Record<string, Region> = {
     credits: [
       // Otvorena dozvola: name the source and the date of its last change (data.zagreb.hr: 7 May 2025), mark changes
       "Map data © OpenStreetMap contributors · Buildings: Grad Zagreb, ZG3D 2022, data.zagreb.hr, 7. 5. 2025. (Otvorena dozvola, izmijenjeno)",
-      "Terrain: Copernicus DEM © DLR, Airbus DS",
+      "Terrain: Copernicus DEM © DLR, Airbus DS · Painted with AI",
     ],
     osmExtract: "https://download.geofabrik.de/europe/croatia-latest.osm.pbf",
     geoidM: 46.06, // EGM2008 at Trg bana Jelačića (PROJ cs2cs EPSG:4326+3855 -> 4979: 46.057 m)

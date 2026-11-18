@@ -24,9 +24,9 @@ Stuttgart (region `stuttgart`, rendered procedurally, not painted):
 
 > Map data © OpenStreetMap contributors · Datenquelle: LGL, www.lgl-bw.de, dl-de/by-2-0 (verändert) · Terrain: LGL DGM1, Copernicus DEM © DLR, Airbus DS
 
-Zagreb (region `zagreb`, rendered procedurally, not painted):
+Zagreb (region `zagreb`, painted with AI: GPT Image 2.6 and Nano Banana 2.1 on fal.ai, the procedural render wherever a window isn't painted):
 
-> Map data © OpenStreetMap contributors · Buildings: Grad Zagreb, ZG3D 2022, data.zagreb.hr, 7. 5. 2025. (Otvorena dozvola, izmijenjeno) · Terrain: Copernicus DEM © DLR, Airbus DS
+> Map data © OpenStreetMap contributors · Buildings: Grad Zagreb, ZG3D 2022, data.zagreb.hr, 7. 5. 2025. (Otvorena dozvola, izmijenjeno) · Terrain: Copernicus DEM © DLR, Airbus DS · Painted with AI
 
 Each region lists its own credit lines in `pipeline/src/places.ts` (`credits`).
 

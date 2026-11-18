@@ -64,6 +64,18 @@ const FILMS: Record<string, { shots: Shot[]; planeShot?: number }> = {
     { at: [48.7965, 9.2230], scale: 0.3, note: "wide: up the river to Bad Cannstatt" },
     { at: [48.7922, 9.2320], scale: 0.6, hold: 2.0, note: "the Neckarpark: the stadium and its pitches (title)" },
   ] },
+  // the launch clip (--seconds 24): Gornji grad, Kaptol, Donji grad, Jarun, then wide over the city. The old town
+  // stands ~40 m above groundH, so its landmarks are given in art px at their own height (llhToPixel).
+  zagreb: { shots: [
+    { at: [-227, -1888], px: true, scale: 1.0, hold: 1.4, note: "St Mark's Church: the tiled roof with the two coats of arms" },
+    { at: [-734, -1448], px: true, scale: 1.0, hold: 1.0, note: "Lotrščak Tower at the top of the funicular" },
+    { at: [1024, -651], px: true, scale: 0.85, hold: 1.2, note: "Zagreb Cathedral on Kaptol: the two spires" },
+    { at: [-350, 328], px: true, scale: 0.85, hold: 1.0, note: "Zrinjevac: plane trees and the music pavilion" },
+    { at: [-2768, -277], px: true, scale: 0.9, hold: 1.2, note: "the Croatian National Theatre (HNK)" },
+    { at: [45.7990, 15.9450], scale: 0.16, note: "wide: over Trešnjevka towards the lake" },
+    { at: [-21870, 1393], px: true, scale: 0.3, hold: 1.3, note: "Jarun: the lake, its islands and the regatta course" },
+    { at: [45.8000, 15.9750], scale: 0.042, hold: 2.6, note: "wide: the city from the Sava to the foot of Medvednica (title)" },
+  ] },
 };
 const FILM = FILMS[SLUG];
 if (!FILM) throw new Error(`no shots for ${SLUG} (FILMS in film.ts)`);
