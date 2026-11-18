@@ -3,7 +3,8 @@
  *   terrain  Copernicus GLO-30 (a surface model: buildings are removed with a morphological
  *            opening + blur, which is plenty for flat Gush Dan), sea/lakes flattened from OSM;
  *            regions with sources "lgl": LGL DGM1 (1 m bare earth, sampled on a 3 m grid, no
- *            filtering; Copernicus only where DGM1 has no data), rivers left at their surveyed level
+ *            filtering; Copernicus only where DGM1 has no data), rivers left at their surveyed level;
+ *            regions with sources "zg3d": Copernicus fitted to the surveyed base of every ZG3D building
  *   surface  OSM roads at real widths, pavements, landuse, parks, beach, water, rail
  *
  *   npm -w pipeline run ground -- tlv-core
@@ -13,7 +14,7 @@
  *         data/derived/<area>/ground/features.json drawable features in ENU (see Feature)
  */
 import { bridgeEnds, isBridge, type GraphWay } from "./bridges.ts";
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import sharp from "sharp";
 import { openArea } from "./areas.ts";
@@ -22,6 +23,7 @@ import { rasterSampler, toUtm } from "./lgl.ts";
 import { DERIVED, RAW, readJson } from "./paths.ts";
 import { REGIONS } from "./places.ts";
 import { ROAD, isOneway, roadWidth } from "./roadspec.ts";
+import { zg3dBases } from "./zg3d.ts";
 
 type P2 = [number, number];
 const MARGIN = 0.02;
@@ -180,6 +182,9 @@ function areaKind(t: Record<string, string>): string | null {
 }
 
 const osm = readJson(join(RAW, name, "ground.json"));
+// funicular tracks (Zagreb's Uspinjača) are only in rails.json (fetched since funiculars were added there): drawn as rail
+if (existsSync(join(RAW, name, "rails.json")))
+  osm.elements.push(...readJson(join(RAW, name, "rails.json")).elements.filter((e: any) => e.type === "way" && e.tags?.railway === "funicular"));
 const features: Feature[] = [];
 const water: P2[][][] = [];
 const coast: P2[][] = [];
@@ -347,6 +352,26 @@ if (fineShare < 1) {
   const r = Math.round(100 / STEP), s = Math.round(40 / STEP);
   const smooth = filter(filter(filter(filter(h, r, "min"), r, "max"), s, "mean"), s, "mean");
   for (let i = 0; i < n; i++) if (!fine[i]) h[i] = smooth[i];
+}
+// ZG3D: the opened Copernicus surface is off by up to ±10 m (trees, dense blocks, the Gornji grad ridge).
+// Every building's surveyed base is a bare-earth sample: spread their residuals over the grid (≈ gaussian,
+// σ ≈ 25 m) and fade the correction out where buildings are sparse, back to plain Copernicus.
+if (region.sources === "zg3d") {
+  const num = new Float32Array(n), den = new Float32Array(n), at = (x: number, y: number) =>
+    Math.round((y - grid.y0) / STEP) * grid.nx + Math.round((x - grid.x0) / STEP);
+  const bases = zg3dBases(tb as [number, number, number, number], readJson(join(RAW, "zg3d", "index.json")));
+  for (const [lat, lon, z] of bases) {
+    const [x, y] = toEnu(lon, lat), i = at(x, y);
+    if (i < 0 || i >= n || x < grid.x0 || y < grid.y0) continue;
+    num[i] += z - h[i]; den[i] += 1;
+  }
+  const r = Math.round(20 / STEP), N0 = 0.02; // N0: mean building density (per cell) at which the fit is half trusted
+  const sn = filter(filter(num, r, "mean"), r, "mean"), sd = filter(filter(den, r, "mean"), r, "mean");
+  const fix: number[] = [];
+  for (let i = 0; i < n; i++) if (!fine[i] && sd[i] > 0) { const c = sn[i] / (sd[i] + N0); h[i] += c; fix.push(c); }
+  fix.sort((a, b) => a - b);
+  const q = (f: number) => fix.length ? fix[Math.floor(f * (fix.length - 1))].toFixed(1) : "-";
+  console.log(`  terrain fitted to ${bases.length} ZG3D building bases: correction ${q(0.05)} / ${q(0.5)} / ${q(0.95)} m (5/50/95 %)`);
 }
 
 // water: sea at 0 m; lakes/rivers at their lowest surrounding ground; land kept above the sea
